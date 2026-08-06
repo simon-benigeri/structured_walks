@@ -1,0 +1,504 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{dirtree}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\newcommand{\vH}{\mathbf{H}}
+\newcommand{\vh}{\mathbf{h}}
+\newcommand{\vA}{\mathbf{A}}
+\newcommand{\vz}{\mathbf{z}}
+\newcommand{\cG}{\mathcal{G}}
+\newcommand{\cT}{\mathcal{T}}
+
+\title{\textbf{Structured Walks: How LLMs Learn Dynamic Context\\from Walk Structures on Graphs}\\[0.5em]
+\large Research Plan}
+\author{Simon Benigeri, Larry Birnbaum, Doug Davis, David McAllester}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%----------------------------------------------------------------------
+\section{Motivation}
+%----------------------------------------------------------------------
+
+Park et al.\ (2025)~\cite{park2025iclr} showed that when an LLM is given random-walk traces over a graph whose nodes are familiar words (e.g.\ \emph{apple}, \emph{bird}), the model's internal representations reorganize---suddenly and emergently---to mirror the graph's geometry. The underlying graph structure (a grid, ring, or hexagonal lattice) is recovered purely from in-context observation, without any fine-tuning.
+
+That work used \textbf{simple, uniform random walks}. We propose to extend the paradigm by introducing \textbf{multiple distinct walk structures}---structured traversal strategies that sit \emph{on top of} the same underlying graph. This separates two levels of latent structure the model must infer:
+
+\begin{enumerate}
+    \item \textbf{Static structure} --- the graph topology (which nodes are neighbors).
+    \item \textbf{Dynamic structure} --- the walk strategy currently governing the sequence (spiral, linear sweep, long-distance jumps, etc.).
+\end{enumerate}
+
+This is analogous to a core distinction in computation and in natural language: static knowledge (a finite-state graph of relationships) versus dynamic, procedural context (the program or narrative strategy currently being executed over that knowledge). We want to know whether LLMs can disentangle and represent both.
+
+%----------------------------------------------------------------------
+\section{Background: What the Paper Established}
+%----------------------------------------------------------------------
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}p{4.5cm}p{10cm}@{}}
+\toprule
+\textbf{Finding} & \textbf{Detail} \\
+\midrule
+In-context representation reorganization & With enough context tokens, LLM representations (measured via PCA on residual-stream activations) snap into the geometry of the underlying graph. \\
+Emergent phase transition & Accuracy on next-node prediction shows a two-phase curve: a slow phase followed by a sharp inflection. The transition point scales as a power law with graph size. \\
+Energy minimization & The reorganization is well described by Dirichlet energy minimization over the graph Laplacian; when energy drops, PCA recovers the spectral embedding of the graph. \\
+Semantic priors can coexist & When nodes have pre-existing semantic correlations (e.g.\ days of the week), the in-context graph structure appears in later principal components, subordinate to but coexisting with the pretrained structure. \\
+Not mere memorization & Model accuracy curves cannot be explained by a simple ``copy from context'' baseline; the model is inferring global structure. \\
+\bottomrule
+\end{tabular}
+\caption{Key findings from Park et al.\ (2025).}
+\label{tab:background}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Part 0: Reproducing the Original Paper}
+\label{sec:reproduction}
+%----------------------------------------------------------------------
+
+Before extending the paradigm, we need a working reproduction of Park et al.'s core results. This gives us (a) confidence that we can replicate the phenomena, (b) a validated codebase to build our extensions on, and (c) direct familiarity with the analysis tools.
+
+\paragraph{Note on existing code.} A third-party repository\footnote{\url{https://github.com/ai-in-pm/ICLR}} exists but does not faithfully reproduce the paper. It uses OpenAI API embeddings and manual gradient steps rather than extracting internal activations from a pretrained LLM. We need to build the pipeline from scratch using NNsight.
+
+%----------------------------------------------------------------------
+\subsection{Step 0.1 --- Infrastructure: Activation Extraction via NNsight}
+
+\textbf{Goal.} Set up a pipeline that feeds token sequences into Llama-3.1-8B and extracts residual-stream activations at every layer.
+
+\begin{itemize}
+    \item Install NNsight\footnote{\url{https://github.com/ndif-team/nnsight}} (Python library for transparent access to model internals via NDIF remote inference, or local inference with HuggingFace models).
+    \item Load Llama-3.1-8B (either locally with sufficient GPU memory, or remotely via NDIF).
+    \item Write a function: given a token sequence of length $N$, return a tensor of shape $(N, L, d)$ --- activations for each token at each of the $L$ layers, with hidden dimension $d = 4096$.
+    \item Verify by extracting activations for a short test sequence and confirming shapes and value ranges are sensible.
+\end{itemize}
+
+\textbf{Key dependencies:} \texttt{nnsight}, \texttt{torch}, \texttt{transformers} (for tokenizer).
+
+%----------------------------------------------------------------------
+\subsection{Step 0.2 --- Graph Construction and Random Walk Generation}
+
+\textbf{Goal.} Implement the data-generating process from the paper.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Graph} & \textbf{Construction} & \textbf{Nodes} \\
+\midrule
+Square grid & $m \times m$ grid, edges between horizontal/vertical neighbors. No periodic boundaries. & 16 or 25 \\
+Ring & $n$ nodes in a cycle, edges between adjacent nodes. & 10 or 50 \\
+Hexagonal lattice & Honeycomb grid. & 30 \\
+\bottomrule
+\end{tabular}
+\caption{Graph types to implement.}
+\end{table}
+
+\textbf{Node labeling.} Assign each node a single-token word with no obvious semantic correlations (e.g.\ \emph{apple}, \emph{sand}, \emph{math}, \emph{river}, \emph{chair}). The paper uses words that tokenize to a single token in Llama's tokenizer---verify this.
+
+\textbf{Walk generation:}
+\begin{itemize}
+    \item \textbf{Grid/hexagonal:} Uniform random walk---at each step, move to a uniformly random neighbor. Emit the visited node's label. Sequences of ${\sim}2000$--$8000$ tokens.
+    \item \textbf{Ring:} Sample random neighboring pairs (not a walk per se, but random edge sampling). Emit pairs sequentially.
+\end{itemize}
+
+\textbf{Restarts.} Optionally restart from a uniformly random node after some number of steps.
+
+\textbf{Output format.} A flat list of token strings, e.g.\ \texttt{["apple", "sand", "chair", "sand", "river", ...]}.
+
+%----------------------------------------------------------------------
+\subsection{Step 0.3 --- Mean Activation Computation and PCA Visualization}
+
+\textbf{Goal.} Reproduce Figures 1 and 2 from the paper---PCA plots showing representations reorganizing to mirror graph geometry.
+
+\textbf{Procedure (following Section 3.1 of the paper):}
+\begin{enumerate}
+    \item Feed the walk sequence into the model and extract residual-stream activations at a target layer (e.g.\ layer 26 of 32 for the grid; sweep multiple layers for the ring).
+    \item At each timestep $t$, look at a window of $N_w = 50$ preceding tokens.
+    \item For each unique concept $\tau$, compute the mean activation vector $\vh_\tau^\ell$ by averaging all activations of $\tau$ within the window.
+    \item Stack mean vectors into a matrix $\vH^\ell(\cT) \in \mathbb{R}^{n \times d}$.
+    \item Run PCA on this matrix; plot the first two principal components, coloring/labeling each point by its node identity and grid position.
+\end{enumerate}
+
+\textbf{What to check:}
+\begin{itemize}
+    \item At short context lengths (few hundred tokens), representations should reflect pretrained semantics (e.g.\ \emph{apple} and \emph{orange} cluster together).
+    \item At long context lengths (thousands of tokens), representations should snap into the graph's geometry (grid shape, ring shape).
+    \item The transition should be sudden, not gradual.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\subsection{Step 0.4 --- Dirichlet Energy Computation}
+
+\textbf{Goal.} Reproduce Figure 4---Dirichlet energy as a function of context length, alongside accuracy.
+
+The \textbf{Dirichlet energy} for graph $\cG$ with adjacency matrix $\vA$ and representation matrix $\vH$ is:
+\begin{equation}
+    E_\cG(\vH) = \sum_{i,j} A_{i,j} \| \vh_i - \vh_j \|^2
+    \label{eq:dirichlet}
+\end{equation}
+
+\textbf{Procedure:}
+\begin{enumerate}
+    \item Compute mean activations $\vH^\ell(\cT)$ at multiple context lengths (e.g.\ every 100 tokens from 0 to 5000).
+    \item At each context length, compute $E_\cG$ using the ground-truth adjacency matrix.
+    \item Plot energy vs.\ context length for several layers.
+\end{enumerate}
+
+\textbf{Expected result.} Energy decreases as context grows, reaching a minimum shortly before accuracy begins its rapid ascent.
+
+%----------------------------------------------------------------------
+\subsection{Step 0.5 --- Rule-Following Accuracy}
+
+\textbf{Goal.} Reproduce the accuracy curves from Figures 4 and 5.
+
+\textbf{``Rule-following accuracy'':} At each timestep, look at the model's output distribution over the vocabulary. Sum the probabilities assigned to all tokens that are valid neighbors of the current node in the graph.
+
+\textbf{Procedure:}
+\begin{enumerate}
+    \item At each timestep in the sequence, record the model's next-token probability distribution.
+    \item Identify the current node (the most recent token).
+    \item Look up its neighbors in the ground-truth graph.
+    \item Sum the probabilities of those neighbor tokens.
+    \item Average over timesteps within a sliding window; plot as a function of context length.
+\end{enumerate}
+
+\textbf{What to check:}
+\begin{itemize}
+    \item Two-phase accuracy curve: slow initial improvement, then a sharp inflection.
+    \item The inflection point should roughly coincide with where Dirichlet energy bottoms out.
+    \item The memorization baselines (Equations 4--5 in the paper) should \emph{not} explain the curve shape.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\subsection{Step 0.6 --- Semantic Prior Experiment (Days of the Week)}
+
+\textbf{Goal.} Reproduce Figure 3---when nodes are days of the week, pretrained semantics and in-context graph structure coexist in different principal components.
+
+\textbf{Procedure:}
+\begin{enumerate}
+    \item Use \{Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday\} as node labels.
+    \item Randomly permute their ordering on a 7-node ring (so the ring order $\neq$ the calendar order).
+    \item Generate walk sequences and extract activations as before.
+    \item PCA on the mean activations:
+    \begin{itemize}
+        \item PCs 1--2 should show the \emph{pretrained} circular ordering (calendar order).
+        \item PCs 3--4 should show the \emph{in-context} ring ordering (the permuted graph).
+    \end{itemize}
+\end{enumerate}
+
+\textbf{Why this matters for our extensions.} This establishes the baseline for how pretrained structure and in-context structure interact---our Experiment~2 (walk-type probing) will build on exactly this kind of factored representation.
+
+%----------------------------------------------------------------------
+\subsection{Step 0.7 --- Phase Transition Scaling}
+
+\textbf{Goal.} Reproduce Figure 8---the accuracy inflection point scales as a power law with graph size.
+
+\textbf{Procedure:}
+\begin{enumerate}
+    \item Run the full pipeline (walk generation $\to$ activation extraction $\to$ accuracy computation) for square grids of size $3\times3$, $4\times4$, $5\times5$, $6\times6$.
+    \item For each, fit a piecewise linear function to the accuracy curve (log-linear) and extract the transition point.
+    \item Plot transition point vs.\ $m$ (grid side length) on a log-log plot.
+    \item Fit a power law: transition point $\sim m^\alpha$.
+\end{enumerate}
+
+\textbf{Expected result.} Clean power-law scaling, consistent with the bond-percolation hypothesis from the paper.
+
+%----------------------------------------------------------------------
+\subsection{Reproduction Milestones and Go/No-Go}
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{3.5cm}p{7cm}p{4cm}@{}}
+\toprule
+\textbf{Milestone} & \textbf{Criterion} & \textbf{Go / No-Go} \\
+\midrule
+\textbf{0.1} Activation extraction & Correct tensor shapes, reasonable value ranges & Must pass before anything else \\
+\textbf{0.3} PCA shows geometry & Visual match to Figures 1 \& 2 & Core phenomenon---debug before proceeding \\
+\textbf{0.4--0.5} Energy \& accuracy & Qualitative match to Figure 4 curves & Quantitative machinery works---proceed to extensions \\
+\textbf{0.6} Semantic prior separation & Calendar ring in PCs 1--2, graph ring in PCs 3--4 & Confirms factored representations---critical for Q1--Q3 \\
+\textbf{0.7} Power-law scaling & Linear trend on log-log plot & Nice to have---not blocking \\
+\bottomrule
+\end{tabular}
+\caption{Reproduction milestones.}
+\end{table}
+
+%----------------------------------------------------------------------
+\subsection{Estimated Compute Requirements}
+
+\begin{itemize}
+    \item \textbf{Model:} Llama-3.1-8B (${\sim}16$\,GB in float16). Can run on a single A100/H100, or use NDIF remote inference.
+    \item \textbf{Per run:} A single sequence of 5000 tokens through Llama-3.1-8B with full activation extraction takes ${\sim}30$--$60$ seconds on an A100.
+    \item \textbf{Total for reproduction:} ${\sim}50$--$100$ runs across graph sizes, context lengths, and layers. Roughly 1--2 GPU-hours.
+    \item \textbf{Total for extensions (Experiments 1--5):} ${\sim}5$--$10\times$ the reproduction cost, so ${\sim}10$--$20$ GPU-hours. Very manageable.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Core Research Questions}
+\label{sec:questions}
+%----------------------------------------------------------------------
+
+\subsection{Q1 --- Can the model separate static graph structure from dynamic walk structure?}
+
+When sequences are generated by \emph{different} walk strategies over the \emph{same} graph, does the model learn a single, shared representation of the graph topology, distinct from its representation of the current walk type?
+
+\subsection{Q2 --- How does walk-structure diversity affect the speed and quality of graph learning?}
+
+Does exposure to multiple walk strategies slow down or speed up recovery of the underlying graph? Measured per-token (controlling for total exposure to individual graph edges), does variety help, hurt, or make no difference?
+
+\subsection{Q3 --- Does the model form explicit representations of walk structure?}
+
+Beyond recovering the graph, does the model develop internal representations that distinguish which walk strategy is currently active? If so, where in the network (which layers, which principal components) does this information live?
+
+\subsection{Q4 --- How does the model handle ``long-distance'' and non-local walk strategies?}
+
+Natural language often involves non-local narrative moves: flashbacks, outlines-then-details, comparisons across distant topics. If we introduce walk strategies that jump across the graph (not just step to neighbors), can the model still infer the graph and the walk logic?
+
+%----------------------------------------------------------------------
+\section{Proposed Experiments}
+\label{sec:experiments}
+%----------------------------------------------------------------------
+
+%----------------------------------------------------------------------
+\subsection{Experiment 1: Multiple Walk Structures on a Single Grid}
+
+\textbf{Setup.} Use the same square grid (e.g.\ $4\times4$ or $5\times5$) from Park et al.\ Generate long sequences composed of segments, where each segment follows one of $k$ distinct walk strategies, chosen at random at each restart.
+
+\textbf{Walk strategies (examples):}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Strategy} & \textbf{Description} \\
+\midrule
+Random walk & Uniform random neighbor selection (baseline, replicating the original paper). \\
+Tight spiral & Start at a node, spiral outward visiting neighbors in a consistent rotational direction. \\
+Linear sweep & Pick a direction (e.g.\ east); step in that direction with 95\%+ probability, occasionally turning. Parameterize by sweep length before a forced turn. \\
+Biased drift & Like a random walk but with a directional bias (e.g.\ 60\% probability of moving right). \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Measurements:}
+\begin{itemize}
+    \item PCA of residual-stream activations (replicating Park et al.'s visualization pipeline).
+    \item Dirichlet energy as a function of context length (does the graph still emerge?).
+    \item Accuracy on next-node prediction, compared against the single-walk baseline.
+    \item Per-token learning efficiency: normalize context length by unique edge exposures.
+\end{itemize}
+
+\textbf{What we hope to learn.} Whether the graph representation is robust to walk-structure variation, and whether recovery is faster or slower when the model must also disentangle walk types.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 2: Probing for Walk-Structure Representations}
+
+\textbf{Setup.} Same as Experiment 1. After collecting activations, apply linear probes (logistic regression on frozen activations) to classify which walk strategy generated the current segment.
+
+\textbf{Measurements:}
+\begin{itemize}
+    \item Probe accuracy by layer: where in the network is walk-type information encoded?
+    \item Compare with the principal components that encode graph structure (from Experiment~1). Do they overlap or separate?
+    \item Examine whether walk-type information appears in earlier or later PCs than graph structure.
+\end{itemize}
+
+\textbf{What we hope to learn.} Whether the model represents walk structure at all, and if so, whether it is represented \emph{separately} from the graph topology---i.e., a factored representation of static vs.\ dynamic context.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 3: Long-Distance and Non-Local Walk Strategies}
+
+\textbf{Setup.} Introduce walk strategies that involve jumps across the graph, not just neighbor steps:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Strategy} & \textbf{Description} \\
+\midrule
+Outline-then-fill & Jump to a distant node (e.g.\ 5--10 hops away), then walk back filling in intermediate nodes. Models ``explain the endpoints, then fill in the middle.'' \\
+Pivot-and-branch & Hold a node fixed; take short walks (2--4 steps) in 2--3 different directions from it, listed sequentially. Models ``explore scenarios from a central point.'' \\
+Teleport-and-resume & With some probability $p$, jump to a uniformly random node (like PageRank teleportation), then resume local walking. Models restarts and topic shifts. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Measurements:}
+\begin{itemize}
+    \item Does the model still recover the graph topology from these non-local traces?
+    \item Dirichlet energy curves: do they still show a clean phase transition, or is it noisier/delayed?
+    \item Accuracy on next-node prediction for local vs.\ non-local segments separately.
+\end{itemize}
+
+\textbf{What we hope to learn.} Whether the model can infer graph structure from walk strategies that only \emph{implicitly} reveal local connectivity (through intermediate fill-in steps or through statistical aggregation of many jumps). This connects to how LLMs might handle non-linear narrative structures.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 4: Introducing New Walk Structures Mid-Context}
+
+\textbf{Setup.} Begin the context window with segments from only 1--2 walk strategies. Partway through, introduce a novel walk strategy the model has not yet seen in this context.
+
+\textbf{Measurements:}
+\begin{itemize}
+    \item Does graph-structure quality (Dirichlet energy) degrade when the new walk type appears?
+    \item How quickly does the model adapt to the new walk type (probe accuracy for walk classification)?
+    \item Does prior graph knowledge (from earlier walk types) transfer, accelerating recovery?
+\end{itemize}
+
+\textbf{What we hope to learn.} Whether an already-inferred graph representation is robust to encountering a new dynamic pattern over it---a basic test of compositionality between static and dynamic representations.
+
+%----------------------------------------------------------------------
+\subsection{Experiment 5: Scaling --- Number of Walk Types $\times$ Graph Size}
+
+\textbf{Setup.} Systematically vary:
+\begin{itemize}
+    \item Graph size: $3\times3$, $4\times4$, $5\times5$, $6\times6$ grids (9 to 36 nodes).
+    \item Number of walk types: 1, 2, 4, 8.
+\end{itemize}
+
+For each combination, measure the context length required to reach the accuracy inflection point (the ``phase transition'' from Park et al.).
+
+\textbf{Measurements:}
+\begin{itemize}
+    \item Transition point as a function of (graph size, number of walk types).
+    \item Does the power-law scaling from the original paper still hold?
+    \item Is there an additive or multiplicative cost to having more walk types?
+\end{itemize}
+
+\textbf{What we hope to learn.} The scaling relationship between structural complexity (graph size), procedural complexity (number of walk types), and the amount of context needed for in-context structure learning.
+
+%----------------------------------------------------------------------
+\section{Implementation Notes}
+\label{sec:implementation}
+%----------------------------------------------------------------------
+
+\subsection{Why This Is Tractable}
+
+\begin{itemize}
+    \item \textbf{No benchmark creation needed.} All data is synthetically generated from simple graph + walk-strategy definitions.
+    \item \textbf{Reproduction-first approach.} Part~0 builds all the core analysis tools (activation extraction, PCA, Dirichlet energy, accuracy curves). Once validated against the paper's results, these tools are reused directly for Experiments~1--5.
+    \item \textbf{Small graphs suffice.} The original paper gets clean results with 10--36 node graphs and context windows of a few thousand tokens. Our extensions add walk-structure variation but don't require larger graphs.
+    \item \textbf{Modest compute.} ${\sim}2$ GPU-hours for reproduction, ${\sim}10$--$20$ GPU-hours for all extensions. Single A100 or NDIF remote access suffices.
+\end{itemize}
+
+\subsection{Models}
+
+Start with Llama-3.1-8B (to compare directly with the paper), then optionally extend to other models (Gemma-2, Llama-3.2-1B) to test generality.
+
+\subsection{Codebase Architecture}
+
+Built incrementally during Part~0, extended in Parts~1--5:
+
+\begin{verbatim}
+structured_walks/
+├── graphs/
+│   ├── grid.py              # Square grid construction
+│   ├── ring.py              # Ring/cycle construction
+│   └── hexagonal.py         # Honeycomb lattice
+├── walks/
+│   ├── random_walk.py       # Uniform random walk (reproduction)
+│   ├── spiral.py            # Tight spiral (Exp 1)
+│   ├── linear_sweep.py      # Linear sweep (Exp 1)
+│   ├── biased_drift.py      # Biased drift (Exp 1)
+│   ├── outline_fill.py      # Outline-then-fill (Exp 3)
+│   ├── pivot_branch.py      # Pivot-and-branch (Exp 3)
+│   └── teleport.py          # Teleport-and-resume (Exp 3)
+├── activation/
+│   ├── extract.py           # NNsight activation extraction
+│   └── mean_activations.py  # Windowed mean per concept
+├── analysis/
+│   ├── pca.py               # PCA visualization
+│   ├── dirichlet.py         # Dirichlet energy
+│   ├── accuracy.py          # Rule-following accuracy
+│   ├── transition.py        # Piecewise-linear fit
+│   └── probes.py            # Linear probes (Exp 2)
+├── experiments/
+│   ├── reproduce.py         # Part 0: full reproduction
+│   ├── exp1_multi_walk.py
+│   ├── exp2_probing.py
+│   ├── exp3_nonlocal.py
+│   ├── exp4_novel_walk.py
+│   └── exp5_scaling.py
+└── requirements.txt
+\end{verbatim}
+
+\subsection{Key Dependencies}
+
+\texttt{nnsight}, \texttt{torch}, \texttt{transformers}, \texttt{numpy}, \texttt{scikit-learn}, \texttt{networkx}, \texttt{matplotlib}.
+
+%----------------------------------------------------------------------
+\section{Summary: What We Hope to Learn}
+\label{sec:summary}
+%----------------------------------------------------------------------
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{5cm}cp{6.5cm}@{}}
+\toprule
+\textbf{Question} & \textbf{Exp.} & \textbf{Expected Outcome} \\
+\midrule
+Does the graph emerge despite walk variation? & 1 & Yes---graph structure is a statistical invariant across walk types. \\
+Is walk structure represented separately? & 2 & Walk-type info appears in different layers/components than graph topology. \\
+Can non-local walks reveal local structure? & 3 & Yes, but with a delayed or noisier phase transition. \\
+Is graph knowledge robust to novel walk types? & 4 & Partial---existing graph representation transfers but temporarily degrades. \\
+How do graph size and walk complexity interact? & 5 & Transition point scales with both, possibly multiplicatively. \\
+\bottomrule
+\end{tabular}
+\caption{Summary of research questions and expected outcomes.}
+\end{table}
+
+The overarching thesis is that LLMs, in-context, can factor their representations into \textbf{what the world looks like} (graph topology) and \textbf{what is happening in the world right now} (walk strategy)---mirroring the static/dynamic distinction that pervades both computation and natural language understanding.
+
+%----------------------------------------------------------------------
+\begin{thebibliography}{9}
+%----------------------------------------------------------------------
+
+\bibitem{park2025iclr}
+Core Francisco Park, Andrew Lee, Ekdeep Singh Lubana, Yongyi Yang, Maya Okawa, Kento Nishi, Martin Wattenberg, and Hidenori Tanaka.
+\newblock ICLR: In-Context Learning of Representations.
+\newblock In \emph{International Conference on Learning Representations}, 2025.
+\newblock \url{https://arxiv.org/abs/2501.00070}.
+
+\bibitem{garvert2017}
+Mona M.\ Garvert, Raymond J.\ Dolan, and Timothy E.J.\ Behrens.
+\newblock A map of abstract relational knowledge in the human hippocampal--entorhinal cortex.
+\newblock \emph{eLife}, 6:e17086, 2017.
+
+\bibitem{vonoswald2023}
+Johannes Von Oswald, Eyvind Niklasson, Ettore Randazzo, Jo\~{a}o Sacramento, Alexander Mordvintsev, Andrey Zhmoginov, and Max Vladymyrov.
+\newblock Transformers learn in-context by gradient descent.
+\newblock In \emph{International Conference on Machine Learning}, pp.\ 35151--35174. PMLR, 2023.
+
+\bibitem{engels2024}
+Joshua Engels, Eric J.\ Michaud, and Max Tegmark.
+\newblock Not all language model features are linear.
+\newblock \emph{arXiv preprint arXiv:2405.14860}, 2024.
+
+\bibitem{spielman2019}
+Daniel A.\ Spielman.
+\newblock Spectral and algebraic graph theory.
+\newblock Yale University, 2019.
+
+\end{thebibliography}
+
+\end{document}
