@@ -1,0 +1,9 @@
+torch>=2.0
+transformers>=4.40
+nnsight>=0.3
+numpy
+scikit-learn
+networkx
+matplotlib
+scipy
+python-dotenv
