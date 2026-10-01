@@ -3,14 +3,20 @@
 Run this on a Quest LOGIN node, which has internet access. Compute nodes
 generally do not, so the download must happen before the job starts.
 
-    export HF_TOKEN=hf_...            # needs Llama-3.1 license accepted
+Authenticate first, either with `hf auth login` or by putting HF_TOKEN in the
+repo's .env (gitignored). The Llama-3.1 license must be accepted on the model
+page as well.
+
     python scripts/prefetch_model.py  # defaults to meta-llama/Llama-3.1-8B
 """
 
 import argparse
 import os
 
+from dotenv import load_dotenv
 from huggingface_hub import snapshot_download
+
+load_dotenv()
 
 
 def main():
