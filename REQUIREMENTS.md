@@ -29,10 +29,27 @@ All pip-installable. No exotic dependencies.
 
 ---
 
+## Models
+
+We run all experiments across three model families for architecture-generality:
+
+| Model | Params | Why | Access |
+|---|---|---|---|
+| **Llama-3.1-8B** | 8B | Primary (matches original paper) | NDIF or HuggingFace (Meta license) |
+| **Gemma-2-9B** | 9B | Different pretraining + architecture | HuggingFace (Google license) |
+| **Qwen-2.5-7B** | 7B | Bridges to RAGEN follow-up (RAGEN uses Qwen) | HuggingFace (open) |
+
+Optional smaller-scale checks: Llama-3.2-1B, Gemma-2-2B.
+
+---
+
 ## Accounts / Access Needed
 
-1. **NDIF access** — sign up at [ndif.us](https://ndif.us) (if going the remote inference route)
-2. **HuggingFace account** — to download Llama-3.1-8B weights (requires accepting Meta's license, which is instant)
+1. **NDIF access** — sign up at [ndif.us](https://ndif.us) (for remote Llama inference; pending)
+2. **HuggingFace account** — to download model weights:
+   - Llama-3.1-8B: requires accepting Meta's license (instant)
+   - Gemma-2-9B: requires accepting Google's license (instant)
+   - Qwen-2.5-7B: open access, no license gate
 3. That's it. No OpenAI keys, no paid APIs.
 
 ---
@@ -59,11 +76,11 @@ All pip-installable. No exotic dependencies.
 
 | Phase | Runs | GPU-Hours |
 |---|---|---|
-| Reproduction (Part 0) | ~50–100 runs across graph sizes, context lengths, and layers | 1–2 |
-| Extensions (Experiments 1–5) | ~5–10× reproduction | 10–20 |
-| **Total** | | **~12–22 GPU-hours** |
+| Reproduction (Part 0, 3 models) | ~150–300 runs across models, graph sizes, context lengths, layers | 3–6 |
+| Extensions (Experiments 1–5, 3 models) | ~5–10× reproduction | 30–60 |
+| **Total** | | **~33–66 GPU-hours** |
 
-A single sequence of 5000 tokens through Llama-3.1-8B with full activation extraction takes ~30–60 seconds on an A100.
+A single sequence of 5000 tokens through an 8B model with full activation extraction takes ~30–60 seconds on an A100. Running 3 models triples the cost but keeps it well within a single-GPU budget over a few weeks.
 
 ---
 

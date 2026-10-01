@@ -150,12 +150,26 @@ $$E_\mathcal{G}(\mathbf{H}) = \sum_{i,j} A_{i,j} \| \mathbf{h}_i - \mathbf{h}_j 
 | **0.6** Semantic prior separation | Calendar ring in PCs 1–2, graph ring in PCs 3–4 | Confirms factored representations. Critical for our Q1–Q3. |
 | **0.7** Power-law scaling | Linear trend on log-log plot | Nice to have. Not blocking for our extensions. |
 
+### Models
+
+We run all experiments on three model families to establish architecture-generality:
+
+| Model | Params | Architecture | Role |
+|---|---|---|---|
+| **Llama-3.1-8B** | 8B | GQA, 32 layers, RoPE | Primary (direct comparison with Park et al.) |
+| **Gemma-2-9B** | 9B | Sliding window attention, different tokenizer | Different pretraining, validates generality |
+| **Qwen-2.5-7B** | 7B | GQA, different tokenizer | Bridges to RAGEN follow-up (which uses Qwen) |
+
+All three are available on HuggingFace, supported by NNsight, and similar in scale (~7–9B parameters). The pipeline is model-agnostic once activation extraction attribute paths are configured per architecture.
+
+Smaller models (Llama-3.2-1B, Gemma-2-2B) can be tested as optional scale checks if time permits.
+
 ### Estimated Compute Requirements
 
-- **Model:** Llama-3.1-8B (~16GB in float16). Can run on a single A100/H100, or use NDIF remote inference.
-- **Per run:** A single sequence of 5000 tokens through Llama-3.1-8B with full activation extraction takes ~30–60 seconds on an A100.
-- **Total for reproduction:** ~50–100 runs across graph sizes, context lengths, and layers. Roughly 1–2 GPU-hours.
-- **Total for extensions (Experiments 1–5):** ~5–10× the reproduction cost, so ~10–20 GPU-hours. Very manageable.
+- **Models:** Llama-3.1-8B, Gemma-2-9B, Qwen-2.5-7B (~16GB each in float16). Can run on a single A100/H100, or use NDIF remote inference for Llama.
+- **Per run:** A single sequence of 5000 tokens through an 8B model with full activation extraction takes ~30–60 seconds on an A100.
+- **Total for reproduction (all 3 models):** ~150–300 runs. Roughly 3–6 GPU-hours.
+- **Total for extensions (Experiments 1–5, all 3 models):** ~30–60 GPU-hours. Still very manageable on a single A100.
 
 ---
 
@@ -275,7 +289,7 @@ For each combination, measure the context length required to reach the accuracy 
 - **Small graphs suffice.** The original paper gets clean results with 10–36 node graphs and context windows of a few thousand tokens. Our extensions add walk-structure variation but don't require larger graphs.
 - **Modest compute.** ~2 GPU-hours for reproduction, ~10–20 GPU-hours for all extensions. Single A100 or NDIF remote access suffices.
 
-**Models:** Start with Llama-3.1-8B (to compare directly with the paper), then optionally extend to other models (Gemma-2, Llama-3.2-1B) to test generality.
+**Models:** Llama-3.1-8B (primary, matches paper), Gemma-2-9B, and Qwen-2.5-7B (for architecture-generality and RAGEN follow-up compatibility). See Section "Models" above.
 
 **Codebase architecture (built incrementally during Part 0, extended in Parts 1–5):**
 
