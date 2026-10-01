@@ -14,11 +14,17 @@
 # Weights must already be in the HF cache (see scripts/prefetch_model.py),
 # since gengpu compute nodes have no internet access.
 
-set -euo pipefail
+set -eo pipefail
 
+# Call the env's interpreter by absolute path. `module load` prepends the base
+# miniconda bin to PATH, which shadows an activated env, so `python` can be the
+# wrong interpreter even when the prompt says otherwise.
 module load python-miniconda3/4.12.0
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate structured_walks
+PY="${CONDA_PREFIX_OVERRIDE:-$HOME/.conda/envs/structured_walks}/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "No interpreter at $PY -- set CONDA_PREFIX_OVERRIDE to the env prefix." >&2
+    exit 1
+fi
 
 cd "${SLURM_SUBMIT_DIR:-$HOME/structured_walks}"
 
@@ -30,14 +36,14 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
 echo "host: $(hostname)"
-echo "python: $(which python)"
-python -V
-python -c "import torch, transformers, nnsight, accelerate; print('torch', torch.__version__, '| transformers', transformers.__version__, '| nnsight', nnsight.__version__, '| accelerate', accelerate.__version__)"
+echo "python: $PY"
+"$PY" -V
+"$PY" -c "import torch, transformers, nnsight, accelerate; print('torch', torch.__version__, '| transformers', transformers.__version__, '| nnsight', nnsight.__version__, '| accelerate', accelerate.__version__)"
 
 nvidia-smi
-python -c "import torch; assert torch.cuda.is_available(), 'CUDA not visible'; print('GPU:', torch.cuda.get_device_name(0))"
+"$PY" -c "import torch; assert torch.cuda.is_available(), 'CUDA not visible'; print('GPU:', torch.cuda.get_device_name(0))"
 
-python experiments/reproduce.py \
+"$PY" experiments/reproduce.py \
     --model meta-llama/Llama-3.1-8B \
     --grid-size 4 \
     --num-steps 5000 \
