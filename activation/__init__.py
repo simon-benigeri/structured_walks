@@ -4,4 +4,4 @@ from .extract import (
     get_layers,
     describe_placement,
 )
-from .mean_activations import compute_mean_activations
+from .mean_activations import compute_mean_activations, accumulate_window

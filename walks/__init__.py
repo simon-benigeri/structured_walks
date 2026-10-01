@@ -1,4 +1,5 @@
 from .random_walk import random_walk
+from .pair_sampling import random_pair_sequence
 from .spiral import spiral_walk
 from .linear_sweep import linear_sweep_walk
 from .biased_drift import biased_drift_walk

@@ -3,6 +3,43 @@
 import numpy as np
 
 
+def accumulate_window(
+    activations: np.ndarray,
+    token_sequence: list[int],
+    vocab: list[int],
+    end: int,
+    window_size: int | None,
+    sums: np.ndarray,
+    counts: np.ndarray,
+) -> None:
+    """Add one prompt's windowed activations into running sums and counts.
+
+    Park et al. pool across a batch of prompts, one per starting node, so that
+    every concept is observed at least once. Accumulating in place lets us run
+    those prompts one at a time and discard each one's activations, instead of
+    holding the whole batch in memory.
+
+    Args:
+        activations: Array of shape (seq_len, hidden_dim) for one prompt.
+        token_sequence: Token IDs for that prompt.
+        vocab: Concept token IDs, index i being node i.
+        end: Context length to evaluate at.
+        window_size: Tokens to look back over, or None to use the whole prefix
+            (the appendix's N_w = N_c case).
+        sums: Array of shape (num_concepts, hidden_dim), modified in place.
+        counts: Array of shape (num_concepts,), modified in place.
+    """
+    token_to_idx = {tok: i for i, tok in enumerate(vocab)}
+    end = min(end, activations.shape[0])
+    start = 0 if window_size is None else max(0, end - window_size)
+
+    for t in range(start, end):
+        idx = token_to_idx.get(token_sequence[t])
+        if idx is not None:
+            sums[idx] += activations[t]
+            counts[idx] += 1
+
+
 def compute_mean_activations(
     activations: np.ndarray,
     token_sequence: list[int],
