@@ -29,8 +29,13 @@ export TOKENIZERS_PARALLELISM=false
 # appears when the job ends.
 export PYTHONUNBUFFERED=1
 
+echo "host: $(hostname)"
+echo "python: $(which python)"
+python -V
+python -c "import torch, transformers, nnsight, accelerate; print('torch', torch.__version__, '| transformers', transformers.__version__, '| nnsight', nnsight.__version__, '| accelerate', accelerate.__version__)"
+
 nvidia-smi
-python -c "import torch; assert torch.cuda.is_available(); print('GPU:', torch.cuda.get_device_name(0))"
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA not visible'; print('GPU:', torch.cuda.get_device_name(0))"
 
 python experiments/reproduce.py \
     --model meta-llama/Llama-3.1-8B \
