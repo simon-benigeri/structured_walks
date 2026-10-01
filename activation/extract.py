@@ -14,7 +14,7 @@ def setup_model(
     model_name: str = "meta-llama/Llama-3.1-8B",
     remote: bool = False,
     dtype: torch.dtype = torch.bfloat16,
-    device_map: str = "auto",
+    device_map: str | None = None,
 ) -> LanguageModel:
     """Load model via NNsight.
 
@@ -23,7 +23,9 @@ def setup_model(
         remote: If True, prepare for NDIF remote inference and leave weights
             unloaded. If False, dispatch weights onto the local GPU.
         dtype: Weight dtype for local loading.
-        device_map: Accelerate device map for local loading.
+        device_map: Accelerate device map. Defaults to pinning everything to
+            cuda:0 -- "auto" may place some layers on CPU, which makes a
+            long-context forward pass unusably slow.
 
     Returns:
         An NNsight LanguageModel instance.
@@ -35,6 +37,9 @@ def setup_model(
     if remote:
         return LanguageModel(model_name)
 
+    if device_map is None:
+        device_map = "cuda:0" if torch.cuda.is_available() else "cpu"
+
     # transformers>=5 renamed the `torch_dtype` argument to `dtype`.
     try:
         return LanguageModel(
@@ -44,6 +49,14 @@ def setup_model(
         return LanguageModel(
             model_name, device_map=device_map, torch_dtype=dtype, dispatch=True
         )
+
+
+def describe_placement(model: LanguageModel) -> str:
+    """Summarize which devices the model's parameters live on."""
+    from collections import Counter
+
+    counts = Counter(str(p.device) for p in model._model.parameters())
+    return ", ".join(f"{dev}: {n} tensors" for dev, n in sorted(counts.items()))
 
 
 def get_layers(model: LanguageModel):

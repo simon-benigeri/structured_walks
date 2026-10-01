@@ -26,7 +26,12 @@ import matplotlib.pyplot as plt
 from graphs import make_grid_graph
 from graphs.tokens import CONCEPT_TOKENS, verify_single_token
 from walks import random_walk
-from activation import setup_model, extract_activations, compute_mean_activations
+from activation import (
+    setup_model,
+    extract_activations,
+    compute_mean_activations,
+    describe_placement,
+)
 from analysis import (
     pca_visualization,
     dirichlet_energy,
@@ -77,6 +82,8 @@ def main():
     print(f"[1/7] Loading {args.model} (remote={args.remote})...")
     model = setup_model(args.model, remote=args.remote)
     tokenizer = model.tokenizer
+    if not args.remote:
+        print(f"  Parameter placement: {describe_placement(model)}")
 
     # --- Step 0.2: Build graph and assign tokens ---
     graph = make_grid_graph(args.grid_size)
