@@ -30,11 +30,15 @@ def setup_model(
     Returns:
         An NNsight LanguageModel instance.
     """
-    api_key = os.getenv("NDIF_API_KEY")
-    if api_key:
-        CONFIG.set_default_api_key(api_key)
-
     if remote:
+        api_key = os.getenv("NDIF_API_KEY")
+        if api_key:
+            # Writes into the nnsight package directory, so tolerate a
+            # read-only install.
+            try:
+                CONFIG.set_default_api_key(api_key)
+            except OSError:
+                CONFIG.API.APIKEY = api_key
         return LanguageModel(model_name)
 
     if device_map is None:
@@ -127,18 +131,30 @@ def extract_activations(
 
     trace_kwargs = {"remote": True} if remote else {}
 
-    with model.trace(inputs, **trace_kwargs):
-        saved_hidden = {layer: blocks[layer].output.save() for layer in layers}
+    # Containers are created before the trace and only mutated inside it.
+    # nnsight writes variables assigned in the trace body back into the
+    # enclosing frame, so comprehensions (which get their own frame) and
+    # rebinding inside the block are unreliable.
+    saved_hidden = {}
+    saved = {}
 
-        saved_probs = None
-        saved_logits = None
+    with model.trace(inputs, **trace_kwargs):
+        for layer in layers:
+            saved_hidden[layer] = blocks[layer].output.save()
+
         if node_token_ids is not None or return_logits:
             logits = model.lm_head.output
             if node_token_ids is not None:
                 probs = torch.softmax(logits[0].float(), dim=-1)
-                saved_probs = probs[:, node_token_ids].save()
+                saved["probs"] = probs[:, node_token_ids].save()
             if return_logits:
-                saved_logits = logits.save()
+                saved["logits"] = logits.save()
+
+    if not saved_hidden:
+        raise RuntimeError(
+            "The trace produced no saved activations. Check that nnsight is "
+            f"version 0.7+ (found {getattr(__import__('nnsight'), '__version__', '?')})."
+        )
 
     activations = {}
     for layer, value in saved_hidden.items():
@@ -147,11 +163,11 @@ def extract_activations(
 
     results = {"activations": activations}
 
-    if saved_probs is not None:
-        results["node_probs"] = saved_probs.detach().cpu().float().numpy()
+    if "probs" in saved:
+        results["node_probs"] = saved["probs"].detach().cpu().float().numpy()
 
-    if saved_logits is not None:
-        logits_np = saved_logits.detach().cpu().float().numpy()
+    if "logits" in saved:
+        logits_np = saved["logits"].detach().cpu().float().numpy()
         results["logits"] = logits_np[0] if logits_np.ndim == 3 else logits_np
 
     return results
