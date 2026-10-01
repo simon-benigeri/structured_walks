@@ -1,6 +1,7 @@
 torch>=2.0
 transformers>=4.40
-nnsight>=0.3
+nnsight>=0.7
+accelerate>=0.26  # required by device_map="auto" when dispatching to GPU
 numpy
 scikit-learn
 networkx
