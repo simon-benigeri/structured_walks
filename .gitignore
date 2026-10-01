@@ -7,8 +7,10 @@ dist/
 build/
 .ipynb_checkpoints/
 outputs/
+logs/
 *.log
+*.out
+*.err
 *.aux
 *.toc
-*.out
 *.synctex.gz
