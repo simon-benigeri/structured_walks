@@ -19,9 +19,17 @@ def find_transition_point(
     Returns:
         Dict with keys:
             'transition_point': context length at the breakpoint
-            'slow_slope': slope of the first (slow) phase
-            'fast_slope': slope of the second (fast) phase
+            'slow_slope': slope of the first segment
+            'fast_slope': slope of the second segment
             'residual': sum of squared residuals of the fit
+            'shape': 'slow_then_fast' when the second segment is steeper -- the
+                phase transition the paper describes -- or 'fast_then_slow'
+                when the curve is merely saturating
+            'is_transition': True only for 'slow_then_fast'
+
+    The breakpoint minimizes residual, so this always returns a value even for
+    a smoothly saturating curve. Check 'is_transition' before calling the
+    result a phase transition.
     """
     log_lengths = np.log(context_lengths)
     n = len(log_lengths)
@@ -46,9 +54,14 @@ def find_transition_point(
             best_breakpoint = k
             best_slopes = (slope1, slope2)
 
+    slow, fast = best_slopes
+    shape = "slow_then_fast" if fast > slow else "fast_then_slow"
+
     return {
         "transition_point": context_lengths[best_breakpoint],
-        "slow_slope": best_slopes[0],
-        "fast_slope": best_slopes[1],
+        "slow_slope": slow,
+        "fast_slope": fast,
         "residual": best_residual,
+        "shape": shape,
+        "is_transition": shape == "slow_then_fast",
     }

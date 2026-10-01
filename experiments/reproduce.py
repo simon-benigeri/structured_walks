@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
 
-from graphs import make_grid_graph
+from graphs import make_grid_graph, make_ring_graph, make_hexagonal_graph
 from graphs.tokens import CONCEPT_TOKENS, verify_single_token
 from walks import random_walk
 from activation import (
@@ -45,7 +45,17 @@ from analysis import (
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", default="meta-llama/Llama-3.1-8B")
-    p.add_argument("--grid-size", type=int, default=4)
+    p.add_argument(
+        "--graph",
+        choices=["grid", "ring", "hex"],
+        default="grid",
+        help="Graph family. The paper uses a 4x4 grid for Figs. 1/4 but a "
+             "25-node grid and 50-node ring for the Fig. 5 baseline comparison.",
+    )
+    p.add_argument("--grid-size", type=int, default=4, help="Side length for --graph grid.")
+    p.add_argument("--ring-nodes", type=int, default=10, help="Nodes for --graph ring.")
+    p.add_argument("--hex-rows", type=int, default=3)
+    p.add_argument("--hex-cols", type=int, default=5)
     p.add_argument("--num-steps", type=int, default=5000)
     p.add_argument("--window-size", type=int, default=50)
     p.add_argument(
@@ -78,6 +88,18 @@ def parse_args():
     return p.parse_args()
 
 
+def build_graph(args):
+    """Construct the graph and a short description for plot titles."""
+    if args.graph == "grid":
+        return make_grid_graph(args.grid_size), f"{args.grid_size}x{args.grid_size} grid"
+    if args.graph == "ring":
+        return make_ring_graph(args.ring_nodes), f"{args.ring_nodes}-node ring"
+    return (
+        make_hexagonal_graph(args.hex_rows, args.hex_cols),
+        f"{args.hex_rows}x{args.hex_cols} hex lattice",
+    )
+
+
 def load_cache(path: str):
     """Load activations saved by a previous run."""
     blob = np.load(path, allow_pickle=False)
@@ -91,13 +113,16 @@ def load_cache(path: str):
         "node_token_ids": blob["node_token_ids"].tolist(),
         "labels": [str(s) for s in blob["labels"]],
         "walk_nodes": blob["walk_nodes"],
-        "grid_size": int(blob["grid_size"]),
+        "graph_args": {k: v.item() if v.ndim == 0 else str(v)
+                       for k, v in ((k, blob[k]) for k in
+                                    ("graph", "grid_size", "ring_nodes",
+                                     "hex_rows", "hex_cols") if k in blob.files)},
     }
     return acts, meta
 
 
 def save_cache(path, acts, token_id_seq, node_probs, node_token_ids, labels,
-               walk_nodes, grid_size):
+               walk_nodes, graph_args):
     """Persist activations as float16 -- plenty for this analysis, half the size."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     np.savez_compressed(
@@ -107,7 +132,7 @@ def save_cache(path, acts, token_id_seq, node_probs, node_token_ids, labels,
         node_token_ids=np.array(node_token_ids),
         labels=np.array(labels),
         walk_nodes=np.array(walk_nodes),
-        grid_size=grid_size,
+        **graph_args,
         **{f"act_layer_{l}": v.astype(np.float16) for l, v in acts.items()},
     )
 
@@ -127,7 +152,8 @@ def main():
     if args.from_cache:
         print(f"[1/7] Loading cached activations from {args.from_cache} (no GPU needed)...")
         acts, cached = load_cache(args.from_cache)
-        args.grid_size = cached["grid_size"]
+        for key, value in cached["graph_args"].items():
+            setattr(args, key, value)
         args.layers = sorted(acts)
         if args.target_layer not in acts:
             args.target_layer = max(acts)
@@ -141,7 +167,7 @@ def main():
             print(f"  Parameter placement: {describe_placement(model)}")
 
     # --- Step 0.2: Build graph and assign tokens ---
-    graph = make_grid_graph(args.grid_size)
+    graph, graph_desc = build_graph(args)
     num_nodes = graph.number_of_nodes()
     labels = CONCEPT_TOKENS[:num_nodes]
     if len(labels) < num_nodes:
@@ -149,7 +175,7 @@ def main():
             f"Need {num_nodes} concept tokens but CONCEPT_TOKENS has {len(CONCEPT_TOKENS)}."
         )
 
-    print(f"[2/7] Graph: {args.grid_size}x{args.grid_size} grid, {num_nodes} nodes")
+    print(f"[2/7] Graph: {graph_desc}, {num_nodes} nodes")
 
     if cached is not None:
         labels = cached["labels"]
@@ -207,8 +233,17 @@ def main():
         print(f"  Activations: {acts[args.target_layer].shape}, node_probs: {node_probs.shape}")
 
         if args.cache:
-            save_cache(args.cache, acts, token_id_seq, node_probs, node_token_ids,
-                       labels, walk_nodes, args.grid_size)
+            save_cache(
+                args.cache, acts, token_id_seq, node_probs, node_token_ids,
+                labels, walk_nodes,
+                {
+                    "graph": args.graph,
+                    "grid_size": args.grid_size,
+                    "ring_nodes": args.ring_nodes,
+                    "hex_rows": args.hex_rows,
+                    "hex_cols": args.hex_cols,
+                },
+            )
             print(f"  Cached activations to {args.cache}")
 
     seq_len = acts[args.target_layer].shape[0]
@@ -264,7 +299,7 @@ def main():
         if not present.all():
             title += f" ({present.sum()}/{num_nodes} nodes)"
         pca_visualization(H, labels, title=title, ax=ax, present=present)
-    fig.suptitle(f"{args.model} layer {args.target_layer} — {args.grid_size}x{args.grid_size} grid")
+    fig.suptitle(f"{args.model} layer {args.target_layer} — {graph_desc}")
     fig.savefig(f"{args.outdir}/pca_by_context.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -293,7 +328,6 @@ def main():
     ax_a.set_ylabel("rule-following accuracy")
     ax_a.set_xscale("log")
     ax_a.grid(alpha=0.3)
-    ax_a.legend(loc="lower right", fontsize=8)
 
     first = np.flatnonzero(~np.isnan(accuracies))
     if first.size:
@@ -313,13 +347,20 @@ def main():
     transition = None
     if valid.sum() >= 6:
         transition = find_transition_point(context_lengths[valid], accuracies[valid])
-        ax_a.axvline(transition["transition_point"], ls="--", color="tab:red",
-                     label=f"transition ≈ {transition['transition_point']}")
-        ax_a.legend()
+        point = transition["transition_point"]
+        kind = "transition" if transition["is_transition"] else "saturation knee"
+        ax_a.axvline(point, ls="--", color="tab:red", label=f"{kind} ≈ {point}")
+        ax_a.legend(loc="lower right", fontsize=8)
         print(
-            f"  Transition at {transition['transition_point']} tokens "
-            f"(slopes {transition['slow_slope']:.3g} -> {transition['fast_slope']:.3g})"
+            f"  Breakpoint at {point} tokens: slopes "
+            f"{transition['slow_slope']:.3g} -> {transition['fast_slope']:.3g} "
+            f"({transition['shape']})"
         )
+        if not transition["is_transition"]:
+            print(
+                "  NOTE: the second segment is shallower, so this is a saturating "
+                "curve, not the paper's slow-then-fast phase transition."
+            )
 
     fig.savefig(f"{args.outdir}/energy_accuracy.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
