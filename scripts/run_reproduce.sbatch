@@ -25,6 +25,9 @@ cd "${SLURM_SUBMIT_DIR:-$HOME/structured_walks}"
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export HF_HUB_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
+# Without this, stdout is block-buffered into the Slurm log and progress only
+# appears when the job ends.
+export PYTHONUNBUFFERED=1
 
 nvidia-smi
 python -c "import torch; assert torch.cuda.is_available(); print('GPU:', torch.cuda.get_device_name(0))"
