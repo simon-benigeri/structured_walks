@@ -38,6 +38,7 @@ from analysis import (
     rule_following_accuracy_from_node_probs,
     windowed_mean,
     find_transition_point,
+    memorization_accuracy,
 )
 
 
@@ -278,11 +279,35 @@ def main():
     ax_e.legend()
     ax_e.grid(alpha=0.3)
 
-    ax_a.plot(context_lengths, accuracies, color="k")
+    ax_a.plot(context_lengths, accuracies, color="k", label="Llama (observed)")
+
+    # Memorization baselines: if the model were only copying a node's observed
+    # neighbors, accuracy would track these. The paper's claim is that the
+    # observed ascent comes later than both.
+    mem1 = memorization_accuracy(context_lengths, num_nodes, shots=1)
+    mem2 = memorization_accuracy(context_lengths, num_nodes, shots=2)
+    ax_a.plot(context_lengths, mem1, ls=":", color="tab:blue", label="1-shot memorization")
+    ax_a.plot(context_lengths, mem2, ls=":", color="tab:green", label="2-shot memorization")
+
     ax_a.set_xlabel("context length (tokens)")
     ax_a.set_ylabel("rule-following accuracy")
     ax_a.set_xscale("log")
     ax_a.grid(alpha=0.3)
+    ax_a.legend(loc="lower right", fontsize=8)
+
+    first = np.flatnonzero(~np.isnan(accuracies))
+    if first.size:
+        i = first[0]
+        print(
+            f"  At {context_lengths[i]} tokens: observed {accuracies[i]:.3f} vs "
+            f"1-shot {mem1[i]:.3f}, 2-shot {mem2[i]:.3f}"
+        )
+        beats = accuracies > mem1
+        print(
+            "  Observed exceeds the 1-shot baseline at "
+            + (f"{context_lengths[np.flatnonzero(beats)[0]]} tokens"
+               if beats.any() else "no context length")
+        )
 
     valid = ~np.isnan(accuracies)
     transition = None
@@ -303,6 +328,8 @@ def main():
         f"{args.outdir}/metrics.npz",
         context_lengths=context_lengths,
         accuracies=accuracies,
+        memorization_1shot=mem1,
+        memorization_2shot=mem2,
         coverage=coverage,
         per_step_accuracy=per_step_acc,
         walk_nodes=np.array(walk_nodes),
