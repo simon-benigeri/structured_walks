@@ -5,9 +5,10 @@ GPT-2 is small enough to run on CPU. This validates:
 2. Random walk generation
 3. Activation extraction via NNsight (local)
 4. Mean activation computation
-5. PCA visualization
-6. Dirichlet energy computation
-7. Rule-following accuracy
+5. Mean activations at a given context length
+6. PCA visualization
+7. Dirichlet energy
+8. Rule-following accuracy (both implementations agree)
 
 We don't expect GPT-2 to actually learn the graph structure in-context
 (it has a 1024 token context window and is much weaker than Llama-3.1-8B),
@@ -19,6 +20,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import scipy.special
 import matplotlib.pyplot as plt
 from nnsight import LanguageModel
 
@@ -28,6 +30,11 @@ from walks.random_walk import random_walk
 from activation.mean_activations import compute_mean_activations
 from analysis.pca import pca_visualization
 from analysis.dirichlet import dirichlet_energy
+from analysis.accuracy import (
+    rule_following_accuracy,
+    rule_following_accuracy_from_node_probs,
+    windowed_mean,
+)
 
 
 def main():
@@ -36,13 +43,13 @@ def main():
     print("=" * 60)
 
     # --- Step 1: Load GPT-2 via NNsight ---
-    print("\n[1/7] Loading GPT-2...")
+    print("\n[1/8] Loading GPT-2...")
     model = LanguageModel("openai-community/gpt2")
     tokenizer = model.tokenizer
     print(f"  Model loaded. Vocab size: {tokenizer.vocab_size}")
 
     # --- Step 2: Build graph and verify tokens ---
-    print("\n[2/7] Building 4x4 grid graph...")
+    print("\n[2/8] Building 4x4 grid graph...")
     graph = make_grid_graph(4)
     num_nodes = graph.number_of_nodes()
     labels = CONCEPT_TOKENS[:num_nodes]
@@ -62,7 +69,7 @@ def main():
     print(f"  Token IDs (first 5): {list(zip(labels[:5], node_token_ids[:5]))}")
 
     # --- Step 3: Generate random walk ---
-    print("\n[3/7] Generating random walk (800 steps)...")
+    print("\n[3/8] Generating random walk (800 steps)...")
     num_steps = 800  # GPT-2 context is 1024, keep it under
     walk_nodes = random_walk(graph, num_steps)
     walk_tokens = [labels[node] for node in walk_nodes]
@@ -70,7 +77,7 @@ def main():
     print(f"  First 20: {walk_tokens[:20]}")
 
     # --- Step 4: Extract activations ---
-    print("\n[4/7] Extracting activations from GPT-2...")
+    print("\n[4/8] Extracting activations from GPT-2...")
 
     # Tokenize the walk into IDs
     # GPT-2 needs spaces before tokens for proper tokenization
@@ -106,7 +113,7 @@ def main():
     print(f"  Logits shape: {logits_np.shape}")
 
     # --- Step 5: Compute mean activations ---
-    print("\n[5/7] Computing mean activations (window=50)...")
+    print("\n[5/8] Computing mean activations (window=50)...")
 
     # Map each position back to its concept token ID
     # Since GPT-2 may tokenize differently with spaces, we need to align
@@ -121,7 +128,7 @@ def main():
     print(f"  Concepts with nonzero activations: {nonzero_concepts}/{num_nodes}")
 
     # --- Step 6: PCA visualization ---
-    print("\n[6/7] PCA visualization...")
+    print("\n[6/8] PCA visualization...")
     os.makedirs("outputs", exist_ok=True)
 
     fig, projected = pca_visualization(
@@ -133,9 +140,27 @@ def main():
     print("  Saved: outputs/test_pca_gpt2.png")
 
     # --- Step 7: Dirichlet energy ---
-    print("\n[7/7] Computing Dirichlet energy...")
+    print("\n[7/8] Computing Dirichlet energy...")
     energy = dirichlet_energy(mean_acts, graph)
     print(f"  Dirichlet energy: {energy:.4f}")
+
+    # --- Step 8: Rule-following accuracy ---
+    # Computed both ways: from full logits, and from probabilities reduced to the
+    # node-token columns (what we use on Llama to keep a multi-GB vocabulary
+    # tensor off the host). The two must agree.
+    print("\n[8/8] Rule-following accuracy...")
+    node_probs = scipy.special.softmax(logits_np, axis=-1)[:, node_token_ids]
+
+    acc_full = rule_following_accuracy(
+        logits_np, token_id_seq, graph, node_token_ids
+    )
+    acc_reduced = rule_following_accuracy_from_node_probs(
+        node_probs, token_id_seq, graph, node_token_ids
+    )
+    np.testing.assert_allclose(acc_full, acc_reduced, rtol=1e-6, atol=1e-8)
+    print("  Full-logit and reduced implementations agree ✓")
+    print(f"  Mean accuracy over last 50 tokens: {windowed_mean(acc_full, len(token_id_seq), 50):.4f}")
+    print(f"  (chance ≈ {np.mean([graph.degree(n) for n in graph.nodes()]) / tokenizer.vocab_size:.2e})")
 
     # --- Summary ---
     print("\n" + "=" * 60)
@@ -143,8 +168,8 @@ def main():
     print("=" * 60)
     print("\nNote: GPT-2 is not expected to learn the grid structure.")
     print("This test confirms the code is wired correctly end-to-end.")
-    print("When NDIF access is approved, swap in Llama-3.1-8B and increase")
-    print("context length to 2000-8000 tokens to reproduce the paper's results.")
+    print("For the real reproduction, run experiments/reproduce.py on a GPU node")
+    print("with Llama-3.1-8B and a 2000-8000 token context.")
 
 
 if __name__ == "__main__":

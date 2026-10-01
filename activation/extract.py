@@ -12,13 +12,18 @@ load_dotenv()
 
 def setup_model(
     model_name: str = "meta-llama/Llama-3.1-8B",
-    remote: bool = True,
+    remote: bool = False,
+    dtype: torch.dtype = torch.bfloat16,
+    device_map: str = "auto",
 ) -> LanguageModel:
     """Load model via NNsight.
 
     Args:
         model_name: HuggingFace model identifier.
-        remote: If True, use NDIF remote inference (no local GPU needed).
+        remote: If True, prepare for NDIF remote inference and leave weights
+            unloaded. If False, dispatch weights onto the local GPU.
+        dtype: Weight dtype for local loading.
+        device_map: Accelerate device map for local loading.
 
     Returns:
         An NNsight LanguageModel instance.
@@ -27,32 +32,113 @@ def setup_model(
     if api_key:
         CONFIG.set_default_api_key(api_key)
 
-    model = LanguageModel(model_name)
-    return model
+    if remote:
+        return LanguageModel(model_name)
+
+    # transformers>=5 renamed the `torch_dtype` argument to `dtype`.
+    try:
+        return LanguageModel(
+            model_name, device_map=device_map, dtype=dtype, dispatch=True
+        )
+    except TypeError:
+        return LanguageModel(
+            model_name, device_map=device_map, torch_dtype=dtype, dispatch=True
+        )
+
+
+def get_layers(model: LanguageModel):
+    """Return the list of transformer block envoys for a model.
+
+    Handles the two layouts we use: Llama/Mistral/Qwen (`model.model.layers`)
+    and GPT-2 (`model.transformer.h`).
+    """
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return model.model.layers
+    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        return model.transformer.h
+    raise AttributeError(
+        f"Could not locate transformer blocks on {type(model).__name__}. "
+        "Inspect the module tree with print(model) and extend get_layers()."
+    )
+
+
+def _as_hidden_states(output) -> torch.Tensor:
+    """Pull the hidden-state tensor out of a decoder block's output.
+
+    Older transformers returned a tuple `(hidden_states, ...)`; transformers>=5
+    returns the tensor directly for most decoder layers.
+    """
+    if isinstance(output, (tuple, list)):
+        return output[0]
+    return output
 
 
 def extract_activations(
     model: LanguageModel,
-    token_ids: list[int],
+    inputs,
     layers: list[int] | None = None,
-    remote: bool = True,
+    remote: bool = False,
+    node_token_ids: list[int] | None = None,
+    return_logits: bool = False,
 ) -> dict:
-    """Extract residual-stream activations and logits for a token sequence.
+    """Extract residual-stream activations for a token sequence.
+
+    A single forward pass is enough for a full context-length sweep: the
+    activation at position t depends only on the prefix up to t.
 
     Args:
         model: NNsight LanguageModel instance.
-        token_ids: List of token IDs to feed to the model.
+        inputs: Anything NNsight can trace — a prompt string, a list of token
+            IDs, or a dict of tokenizer outputs.
         layers: Which layers to extract from. If None, extracts all layers.
         remote: Whether to run via NDIF remote inference.
+        node_token_ids: If given, next-token probabilities are reduced to just
+            these token IDs inside the trace. This keeps the full
+            (seq_len, vocab_size) tensor off the host, which matters at long
+            context: 8K tokens x 128K vocab is ~4 GB in float32.
+        return_logits: If True, also return the full logits array. Memory
+            hungry; prefer node_token_ids for rule-following accuracy.
 
     Returns:
         Dict with keys:
-            'activations': dict mapping layer_idx -> np.ndarray of shape (seq_len, hidden_dim)
-            'logits': np.ndarray of shape (seq_len, vocab_size)
+            'activations': dict mapping layer_idx -> np.ndarray of shape
+                (seq_len, hidden_dim)
+            'node_probs': np.ndarray of shape (seq_len, len(node_token_ids)),
+                present only when node_token_ids is given
+            'logits': np.ndarray of shape (seq_len, vocab_size), present only
+                when return_logits is True
     """
-    # TODO: Determine correct attribute paths for the target model
-    # For Llama-3.1: model.model.layers[i] for transformer blocks
-    # For GPT-2: model.transformer.h[i] for transformer blocks
-    raise NotImplementedError(
-        "Implement after confirming model architecture attribute paths via NNsight"
-    )
+    blocks = get_layers(model)
+    if layers is None:
+        layers = list(range(len(blocks)))
+
+    trace_kwargs = {"remote": True} if remote else {}
+
+    with model.trace(inputs, **trace_kwargs):
+        saved_hidden = {layer: blocks[layer].output.save() for layer in layers}
+
+        saved_probs = None
+        saved_logits = None
+        if node_token_ids is not None or return_logits:
+            logits = model.lm_head.output
+            if node_token_ids is not None:
+                probs = torch.softmax(logits[0].float(), dim=-1)
+                saved_probs = probs[:, node_token_ids].save()
+            if return_logits:
+                saved_logits = logits.save()
+
+    activations = {}
+    for layer, value in saved_hidden.items():
+        hidden = _as_hidden_states(value).detach().cpu().float().numpy()
+        activations[layer] = hidden[0] if hidden.ndim == 3 else hidden
+
+    results = {"activations": activations}
+
+    if saved_probs is not None:
+        results["node_probs"] = saved_probs.detach().cpu().float().numpy()
+
+    if saved_logits is not None:
+        logits_np = saved_logits.detach().cpu().float().numpy()
+        results["logits"] = logits_np[0] if logits_np.ndim == 3 else logits_np
+
+    return results
