@@ -11,6 +11,7 @@ def pca_visualization(
     n_components: int = 2,
     title: str = "PCA of Concept Representations",
     ax: plt.Axes | None = None,
+    present: np.ndarray | None = None,
 ) -> tuple[plt.Figure, np.ndarray]:
     """Project mean activations onto principal components and plot.
 
@@ -20,10 +21,17 @@ def pca_visualization(
         n_components: Number of PCA components to compute.
         title: Plot title.
         ax: Matplotlib axes to plot on. Creates new figure if None.
+        present: Optional boolean mask of shape (num_concepts,). Absent
+            concepts are excluded from the fit; their zero rows would otherwise
+            sit far from every real activation and dominate the components.
 
     Returns:
-        Tuple of (figure, projected_data of shape (num_concepts, n_components)).
+        Tuple of (figure, projected_data of shape (num_present, n_components)).
     """
+    if present is not None:
+        mean_activations = mean_activations[present]
+        labels = [l for l, keep in zip(labels, present) if keep]
+
     pca = PCA(n_components=n_components)
     projected = pca.fit_transform(mean_activations)
 

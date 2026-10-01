@@ -48,4 +48,5 @@ nvidia-smi
     --grid-size 4 \
     --num-steps 5000 \
     --target-layer 26 \
-    --outdir outputs/reproduce
+    --outdir outputs/reproduce \
+    --cache outputs/reproduce/activations.npz
