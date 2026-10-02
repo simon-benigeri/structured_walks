@@ -49,7 +49,24 @@ echo "host:   $(hostname)"
 echo "python: $PY"
 echo "model:  $MODEL  (steps=$STEPS)"
 "$PY" -c "import torch, transformers, nnsight, accelerate; print('torch', torch.__version__, '| transformers', transformers.__version__, '| nnsight', nnsight.__version__, '| accelerate', accelerate.__version__)"
-"$PY" -c "import torch; print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE (CPU run)')"
+if "$PY" -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+    "$PY" -c "import torch; print('GPU:', torch.cuda.get_device_name(0))"
+elif [ -n "$ALLOW_CPU" ]; then
+    echo "GPU:    none -- continuing on CPU because ALLOW_CPU is set"
+else
+    cat >&2 <<'MSG'
+No GPU visible, so this would run an 8B model on CPU. If you are on a login
+node, stop: submit the job instead, or get an allocation first.
+
+    mkdir -p logs && sbatch scripts/run_all.sbatch
+    srun --account=p53147 --partition=gengpu --gres=gpu:1 \
+         --time=02:00:00 --mem=48G --pty bash -l
+
+Set ALLOW_CPU=1 to override (only sensible for a small model such as
+MODEL=openai-community/gpt2).
+MSG
+    exit 3
+fi
 
 # Fail fast on protocol/analysis regressions before spending GPU time.
 echo
