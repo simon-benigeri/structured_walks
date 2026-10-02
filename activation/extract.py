@@ -126,8 +126,17 @@ def extract_activations(
                 when return_logits is True
     """
     blocks = get_layers(model)
+    num_layers = len(blocks)
     if layers is None:
-        layers = list(range(len(blocks)))
+        layers = list(range(num_layers))
+
+    out_of_range = [l for l in layers if not -num_layers <= l < num_layers]
+    if out_of_range:
+        raise ValueError(
+            f"Layers {out_of_range} do not exist: this model has {num_layers} "
+            f"layers (valid indices 0-{num_layers - 1}). Llama-3.1-8B has 32, "
+            "GPT-2 has 12."
+        )
 
     trace_kwargs = {"remote": True} if remote else {}
 
