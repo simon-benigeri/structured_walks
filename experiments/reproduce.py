@@ -27,7 +27,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from graphs import make_grid_graph, make_ring_graph, make_hexagonal_graph
-from graphs.tokens import assign_tokens, verify_single_token
+from graphs.tokens import CONCEPT_TOKENS, assign_tokens, single_token_pool
 from walks import random_walk, random_pair_sequence
 from activation import (
     setup_model,
@@ -148,13 +148,23 @@ def main():
         # --- Step 0.2: Build graph, randomly arrange concepts ---
         graph, graph_desc = build_graph(args)
         num_nodes = graph.number_of_nodes()
-        labels = assign_tokens(num_nodes, seed=args.seed)
         layers = args.layers
 
         print(f"[2/7] Graph: {graph_desc}, {num_nodes} nodes")
-        bad = [w for w, ok in verify_single_token(tokenizer, labels).items() if not ok]
-        if bad:
-            print(f"  WARNING: multi-token in this tokenizer: {bad}")
+
+        # Which concepts are single-token depends on the model, so filter the
+        # pool with this tokenizer before arranging them on the graph.
+        pool = single_token_pool(tokenizer)
+        dropped = [w for w in CONCEPT_TOKENS if w not in pool]
+        if dropped:
+            print(f"  Dropped {len(dropped)} multi-token concepts: {dropped}")
+        if len(pool) < num_nodes:
+            raise ValueError(
+                f"Only {len(pool)} of {len(CONCEPT_TOKENS)} concepts are "
+                f"single-token for {args.model}, but the graph needs "
+                f"{num_nodes}. Add more candidate words to CONCEPT_TOKENS."
+            )
+        labels = assign_tokens(num_nodes, seed=args.seed, pool=pool)
 
         # Mid-sequence occurrences carry a leading space, so that is the form
         # whose ID we need for both alignment and the output distribution.
@@ -182,13 +192,17 @@ def main():
         for p_idx in range(num_prompts):
             start_node = p_idx % num_nodes
             seq_nodes = generate_sequence(graph, args, start_node)
-            text = " ".join(labels[n] for n in seq_nodes)
+            # Leading space included so the first word is tokenized the same
+            # way as every later one. Without it, words like "rope" split
+            # ("ro"+"pe") and every position after them is misaligned.
+            text = "".join(" " + labels[n] for n in seq_nodes)
             token_id_seq = tokenizer(text)["input_ids"]
 
             if len(token_id_seq) - len(seq_nodes) not in (0, 1):
                 raise ValueError(
                     f"Expected one token per step (plus at most a BOS), got "
-                    f"{len(token_id_seq)} for {len(seq_nodes)} steps."
+                    f"{len(token_id_seq)} for {len(seq_nodes)} steps. Some "
+                    "concept is not single-token in context for this model."
                 )
 
             results = extract_activations(

@@ -82,6 +82,49 @@ def test_batch_of_prompts_covers_every_node():
     assert np.any(single_counts == 0), "a 50-token window should miss some nodes"
 
 
+class _SpaceSensitiveTokenizer:
+    """Stand-in for a BPE tokenizer where a leading space matters.
+
+    Mirrors Llama-3.1: " rope" is one token but "rope" is two. Lets us test
+    prompt construction without downloading a gated model.
+    """
+
+    SPLITS = {"rope", "silk", "foam", "drum", "clay"}
+
+    def encode(self, text, add_special_tokens=False):
+        ids = []
+        for i, word in enumerate(text.split(" ")):
+            if not word:
+                continue
+            leading_space = i > 0 or text.startswith(" ")
+            ids.extend([0] if leading_space or word not in self.SPLITS else [0, 1])
+        return ids
+
+    def __call__(self, text):
+        return {"input_ids": self.encode(text)}
+
+
+def test_prompt_needs_a_leading_space():
+    """Regression: joining without a leading space desynchronizes positions."""
+    tok = _SpaceSensitiveTokenizer()
+    words = ["rope", "apple", "sand"]
+
+    without = tok(" ".join(words))["input_ids"]
+    assert len(without) != len(words), "this tokenizer should split a bare 'rope'"
+
+    with_space = tok("".join(" " + w for w in words))["input_ids"]
+    assert len(with_space) == len(words), "leading space must give one token per word"
+
+
+def test_single_token_check_uses_the_in_context_form():
+    """The bare word and the space-prefixed word can disagree."""
+    tok = _SpaceSensitiveTokenizer()
+    from graphs.tokens import verify_single_token
+
+    assert verify_single_token(tok, ["rope"])["rope"] is True      # " rope"
+    assert verify_single_token(tok, ["rope"], prefix="")["rope"] is False
+
+
 def test_hex_default_is_30_nodes():
     """Fig. 4(c) uses a 30-node honeycomb."""
     assert make_hexagonal_graph(3, 3).number_of_nodes() == 30
@@ -98,6 +141,8 @@ if __name__ == "__main__":
     test_random_walk_steps_along_edges()
     test_token_assignment_is_random_but_seeded()
     test_batch_of_prompts_covers_every_node()
+    test_prompt_needs_a_leading_space()
+    test_single_token_check_uses_the_in_context_form()
     test_hex_default_is_30_nodes()
     test_graphs_are_connected_and_zero_indexed()
     print("protocol tests PASSED")

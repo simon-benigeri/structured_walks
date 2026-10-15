@@ -8,6 +8,7 @@ build/
 .ipynb_checkpoints/
 outputs/
 logs/
+.hf_probe/
 *.log
 *.out
 *.err

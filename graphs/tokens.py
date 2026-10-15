@@ -49,18 +49,43 @@ def assign_tokens(num_nodes: int, seed: int | None = None,
     return rng.sample(pool, num_nodes)
 
 
-def verify_single_token(tokenizer, words: list[str]) -> dict[str, bool]:
+def single_token_pool(tokenizer, pool: list[str] | None = None,
+                      prefix: str = " ") -> list[str]:
+    """Filter a word pool down to those that are one token for this tokenizer.
+
+    Which words qualify is model-specific, so the pool has to be filtered at
+    runtime rather than trusted from the list. Words are checked in the
+    space-prefixed form, because that is how they appear mid-sequence.
+
+    Args:
+        tokenizer: A HuggingFace tokenizer.
+        pool: Candidate words. Defaults to CONCEPT_TOKENS.
+        prefix: String prepended before encoding.
+
+    Returns:
+        The eligible words, in their original order.
+    """
+    pool = list(CONCEPT_TOKENS if pool is None else pool)
+    ok = verify_single_token(tokenizer, pool, prefix=prefix)
+    return [w for w in pool if ok[w]]
+
+
+def verify_single_token(tokenizer, words: list[str],
+                        prefix: str = " ") -> dict[str, bool]:
     """Check which words tokenize to a single token.
 
     Args:
         tokenizer: A HuggingFace tokenizer.
         words: List of words to check.
+        prefix: String prepended before encoding. Defaults to a space, the form
+            in which words actually appear mid-sequence; checking the bare word
+            can say "single token" for a word that is two tokens in context.
 
     Returns:
         Dict mapping word -> True if it's a single token, False otherwise.
     """
     results = {}
     for word in words:
-        token_ids = tokenizer.encode(word, add_special_tokens=False)
+        token_ids = tokenizer.encode(prefix + word, add_special_tokens=False)
         results[word] = len(token_ids) == 1
     return results
