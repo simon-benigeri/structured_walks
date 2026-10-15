@@ -7,3 +7,9 @@ from .accuracy import (
 )
 from .transition import find_transition_point
 from .baselines import memorization_accuracy
+from .circular import (
+    angular_order,
+    chance_level,
+    cycle_overlap,
+    cyclic_order_score,
+)

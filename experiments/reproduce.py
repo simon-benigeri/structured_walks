@@ -11,7 +11,9 @@ Covers Steps 0.1-0.5 of the research plan, following the paper's protocol:
 - Dirichlet energy follows Eq. 3; rule-following accuracy and the 1-/2-shot
   memorization baselines follow Sec. 4.1 and Eqs. 4-5.
 
-Steps 0.6 (semantic priors) and 0.7 (scaling) live in separate scripts.
+Steps 0.6 and 0.7 build on this one: experiments/semantic_priors.py reuses the
+protocol with weekday labels, and experiments/scaling.py drives this script
+across grid sizes to fit the power law.
 
 Run on a GPU node; see scripts/run_reproduce.sbatch.
 """
@@ -52,7 +54,8 @@ def parse_args():
         "--graph",
         choices=["grid", "ring", "hex"],
         default="grid",
-        help="Fig. 4 uses a 4x4 grid, a 10-node ring, and a 30-node hex lattice.",
+        help="Fig. 4 uses a 4x4 grid, a 10-node ring, and a 30-node hex "
+             "lattice; Fig. 5 uses a 5x5 grid and a 50-node ring.",
     )
     p.add_argument("--grid-size", type=int, default=4)
     p.add_argument("--ring-nodes", type=int, default=10)
@@ -117,8 +120,10 @@ def main():
     if args.from_cache:
         print(f"[1/7] Loading pooled activations from {args.from_cache} (no GPU)...")
         blob = np.load(args.from_cache, allow_pickle=False)
-        for key in ("graph", "grid_size", "ring_nodes", "hex_rows", "hex_cols",
-                    "window_size", "window_mode", "num_steps", "seed"):
+        # Restore the run's own settings, so plot titles and graph geometry
+        # describe what was actually extracted rather than the CLI defaults.
+        for key in ("model", "graph", "grid_size", "ring_nodes", "hex_rows",
+                    "hex_cols", "window_size", "window_mode", "num_steps", "seed"):
             if key in blob.files:
                 value = blob[key]
                 setattr(args, key, value.item() if value.ndim == 0 else str(value))
@@ -253,6 +258,7 @@ def main():
                 counts=counts,
                 accuracies=accuracies,
                 num_prompts=num_prompts,
+                model=args.model,
                 graph=args.graph, grid_size=args.grid_size,
                 ring_nodes=args.ring_nodes, hex_rows=args.hex_rows,
                 hex_cols=args.hex_cols, window_size=args.window_size,

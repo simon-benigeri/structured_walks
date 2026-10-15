@@ -1,9 +1,15 @@
 """Token vocabulary for graph node labeling.
 
 Words chosen to:
-1. Tokenize to a single token in Llama-3.1's tokenizer.
+1. Tokenize to a single token in Llama-3.1's tokenizer, space-prefixed (every
+   entry below is verified; use single_token_pool for any other model).
 2. Have no obvious semantic correlations with each other.
-3. Cover enough words for up to 6x6 = 36 node graphs.
+3. Cover the largest graph in the paper -- the 50-node ring of Fig. 5 -- with
+   headroom, so the random arrangement is not forced to use every word.
+
+Only loosely decorrelated: with this many concrete nouns some weak relations
+are unavoidable. What matters is that no relation lines up with graph position,
+which assign_tokens handles by arranging them randomly.
 """
 
 CONCEPT_TOKENS = [
@@ -13,8 +19,16 @@ CONCEPT_TOKENS = [
     "steel", "warm", "dark", "leaf", "drum", "wolf",
     "cake", "silk", "farm", "bell", "star", "pond",
     "gate", "rope", "coal", "mint", "foam", "clay",
+    "glass", "brick", "cloud", "soap", "honey", "paint",
+    "torch", "wagon", "amber", "cedar", "flute", "glove",
+    "hinge", "ivory", "kettle", "ladder", "marble", "ribbon",
+    "saddle", "tunnel", "velvet", "anchor", "barrel", "candle",
+    "feather", "hammer", "island", "jacket", "lantern", "mirror",
+    "owl", "hawk", "monk", "oath", "cave", "mile",
 ]
 
+# Single tokens in Llama-3.1 as well. Unlike CONCEPT_TOKENS these carry a
+# strong pretrained ordering, which is the point of the Step 0.6 experiment.
 WEEKDAY_TOKENS = [
     "Monday", "Tuesday", "Wednesday", "Thursday",
     "Friday", "Saturday", "Sunday",

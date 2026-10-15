@@ -2,7 +2,7 @@
 #SBATCH --account=p53147
 #SBATCH --partition=gengpu
 #SBATCH --gres=gpu:1
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --mem=48G
 #SBATCH --cpus-per-task=4
 #SBATCH --job-name=reproduce_all
@@ -11,7 +11,8 @@
 
 # Run every Part 0 reproduction configuration in one go.
 #
-#   mkdir -p logs && sbatch scripts/run_all.sbatch           # all configs
+#   mkdir -p logs && sbatch scripts/run_all.sbatch           # Steps 0.3-0.6
+#   mkdir -p logs && sbatch scripts/run_all.sbatch scaling   # Step 0.7
 #   mkdir -p logs && sbatch scripts/run_all.sbatch grid4     # just one
 #   bash scripts/run_all.sbatch grid4 ring10                 # inside an srun shell
 #
@@ -45,7 +46,27 @@ STEPS="${STEPS:-5000}"
 LAYERS="${LAYERS:-8 16 20 26 31}"
 TARGET_LAYER="${TARGET_LAYER:-26}"
 
+# scaling is left out of the default sweep: it re-runs four grids on its own and
+# the plan calls the power law nice-to-have rather than blocking. Ask for it by
+# name once the Fig. 4/5 configs look right.
+CONFIGS=("$@")
+if [ ${#CONFIGS[@]} -eq 0 ]; then
+    CONFIGS=(grid4 ring10 hex30 grid5 ring50 weekday)
+fi
+
+# Checked up front, so a typo costs nothing instead of surfacing after the
+# tests and the model load.
+for name in "${CONFIGS[@]}"; do
+    case "$name" in
+        grid4|grid5|ring10|ring50|hex30|weekday|scaling) ;;
+        *) echo "Unknown config '$name' (expected grid4, grid5, ring10, ring50,"\
+                "hex30, weekday, or scaling)" >&2
+           exit 2 ;;
+    esac
+done
+
 echo "host:   $(hostname)"
+echo "configs: ${CONFIGS[*]}"
 echo "python: $PY"
 echo "model:  $MODEL  (steps=$STEPS)"
 "$PY" -c "import torch, transformers, nnsight, accelerate; print('torch', torch.__version__, '| transformers', transformers.__version__, '| nnsight', nnsight.__version__, '| accelerate', accelerate.__version__)"
@@ -71,45 +92,57 @@ fi
 # Fail fast on protocol/analysis regressions before spending GPU time.
 echo
 echo "=== tests ==="
-for t in tests/test_protocol.py tests/test_baselines.py tests/test_accuracy_equivalence.py; do
+for t in tests/test_protocol.py tests/test_baselines.py \
+         tests/test_accuracy_equivalence.py tests/test_circular.py \
+         tests/test_scales.py; do
     "$PY" "$t"
 done
 
-# Each config mirrors a figure from Park et al. (arXiv:2501.00070).
-config_args() {
-    case "$1" in
-        grid4)  echo "--graph grid --grid-size 4" ;;            # Figs. 1, 4(a)
-        ring10) echo "--graph ring --ring-nodes 10" ;;          # Fig. 4(b)
-        hex30)  echo "--graph hex --hex-rows 3 --hex-cols 3" ;; # Fig. 4(c)
-        grid5)  echo "--graph grid --grid-size 5" ;;            # Fig. 5(b)
-        *)      return 1 ;;
+# Graph sizes follow Park et al. (arXiv:2501.00070): 4x4 and 5x5 grids, 10- and
+# 50-node rings, a 30-node hex lattice, and 3x3-6x6 grids for the scaling fit.
+run_config() {
+    local name="$1"
+    local common=(--model "$MODEL" --num-steps "$STEPS" --layers $LAYERS
+                  --target-layer "$TARGET_LAYER")
+
+    case "$name" in
+        grid4)  # Figs. 1, 4(a)
+            "$PY" experiments/reproduce.py "${common[@]}" \
+                --graph grid --grid-size 4 \
+                --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
+        grid5)  # Fig. 5(b)
+            "$PY" experiments/reproduce.py "${common[@]}" \
+                --graph grid --grid-size 5 \
+                --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
+        ring10) # Fig. 4(b)
+            "$PY" experiments/reproduce.py "${common[@]}" \
+                --graph ring --ring-nodes 10 \
+                --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
+        ring50) # Fig. 5(a). 50 prompts of $STEPS tokens -- the longest config.
+            "$PY" experiments/reproduce.py "${common[@]}" \
+                --graph ring --ring-nodes 50 \
+                --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
+        hex30)  # Fig. 4(c)
+            "$PY" experiments/reproduce.py "${common[@]}" \
+                --graph hex --hex-rows 3 --hex-cols 3 \
+                --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
+        weekday) # Step 0.6, Fig. 3
+            "$PY" experiments/semantic_priors.py "${common[@]}" \
+                --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
+        scaling) # Step 0.7, Fig. 8. Runs four grids itself, so it is the slowest.
+            "$PY" experiments/scaling.py "${common[@]}" \
+                --sizes 3 4 5 6 --outdir "outputs/$name" ;;
+        *) return 127 ;;
     esac
 }
 
-CONFIGS=("$@")
-if [ ${#CONFIGS[@]} -eq 0 ]; then
-    CONFIGS=(grid4 ring10 hex30 grid5)
-fi
-
 failed=()
 for name in "${CONFIGS[@]}"; do
-    if ! args="$(config_args "$name")"; then
-        echo "Unknown config '$name' (expected grid4, ring10, hex30, or grid5)" >&2
-        exit 2
-    fi
-
     echo
     echo "================ $name ================"
     start=$SECONDS
     # Keep going if one config fails, so the others still produce results.
-    if "$PY" experiments/reproduce.py \
-            --model "$MODEL" \
-            $args \
-            --num-steps "$STEPS" \
-            --layers $LAYERS \
-            --target-layer "$TARGET_LAYER" \
-            --outdir "outputs/$name" \
-            --cache "outputs/$name/pooled.npz"; then
+    if run_config "$name"; then
         echo "--- $name finished in $((SECONDS - start))s"
     else
         echo "--- $name FAILED after $((SECONDS - start))s" >&2
@@ -120,8 +153,13 @@ done
 echo
 echo "================ summary ================"
 for name in "${CONFIGS[@]}"; do
-    if [ -f "outputs/$name/metrics.npz" ]; then
-        echo "  $name: outputs/$name/ (plots + metrics.npz + pooled.npz)"
+    if [ "$name" = scaling ]; then
+        target="outputs/$name/scaling.npz"
+    else
+        target="outputs/$name/metrics.npz"
+    fi
+    if [ -f "$target" ]; then
+        echo "  $name: outputs/$name/ (plots + $(basename "$target"))"
     else
         echo "  $name: no output"
     fi
