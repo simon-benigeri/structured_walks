@@ -37,6 +37,7 @@ from activation import (
 )
 from analysis import chance_level, cycle_overlap, cyclic_order_score
 from analysis.pca import pca_visualization
+from experiments.reproduce import context_lengths_for
 
 # Fig. 3 reads PCs 1-2 for the prior and PCs 3-4 for the in-context ring.
 PRIOR_PLANE = (0, 1)
@@ -50,7 +51,10 @@ def parse_args():
     p.add_argument("--window-size", type=int, default=50, help="N_w from Sec. 3.1.")
     p.add_argument("--layers", type=int, nargs="+", default=[8, 16, 20, 26, 31])
     p.add_argument("--target-layer", type=int, default=26)
-    p.add_argument("--stride", type=int, default=100)
+    p.add_argument("--stride", type=int, default=100, help="Used by linear spacing.")
+    p.add_argument("--context-spacing", choices=["log", "linear"], default="log")
+    p.add_argument("--context-points", type=int, default=60)
+    p.add_argument("--min-context", type=int, default=10)
     p.add_argument("--outdir", default="outputs/weekday")
     p.add_argument("--remote", action="store_true")
     p.add_argument("--seed", type=int, default=0)
@@ -156,7 +160,7 @@ def main():
             tokenizer.encode(" " + w, add_special_tokens=False)[0] for w in labels
         ]
         layers = args.layers
-        context_lengths = np.arange(args.window_size, args.num_steps + 1, args.stride)
+        context_lengths = context_lengths_for(args)
 
         sums = None
         counts = np.zeros((len(context_lengths), num_nodes))

@@ -47,6 +47,21 @@ def parse_args():
     p.add_argument("--layers", type=int, nargs="+", default=[8, 16, 20, 26, 31])
     p.add_argument("--target-layer", type=int, default=26)
     p.add_argument("--stride", type=int, default=100)
+    # Small grids transition early, so the breakpoint needs resolution down
+    # there; these are forwarded to reproduce.py unchanged.
+    p.add_argument("--context-spacing", choices=["log", "linear"], default="log")
+    p.add_argument("--context-points", type=int, default=60)
+    p.add_argument("--min-context", type=int, default=10)
+    p.add_argument("--accuracy-window", type=int, default=1)
+    p.add_argument(
+        "--prompts",
+        type=int,
+        default=0,
+        help="Prompts per grid size. 0 keeps the paper's batch size of one per "
+             "node, which for a 3x3 grid is only 9 samples per context length "
+             "and leaves the breakpoint jittery. Raising this averages the same "
+             "quantity over more samples, at linear GPU cost.",
+    )
     p.add_argument("--outdir", default="outputs/scaling")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
@@ -79,12 +94,18 @@ def run_one(args, m: int) -> str:
         "--graph", "grid", "--grid-size", str(m),
         "--num-steps", str(args.num_steps),
         "--stride", str(args.stride),
+        "--context-spacing", args.context_spacing,
+        "--context-points", str(args.context_points),
+        "--min-context", str(args.min_context),
+        "--accuracy-window", str(args.accuracy_window),
         "--target-layer", str(args.target_layer),
         "--layers", *[str(l) for l in args.layers],
         "--outdir", outdir,
         "--cache", os.path.join(outdir, "pooled.npz"),
         "--seed", str(args.seed),
     ]
+    if args.prompts:
+        cmd += ["--prompts", str(args.prompts)]
     print(f"  {m}x{m}: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
     return outdir

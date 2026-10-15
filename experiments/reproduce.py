@@ -7,9 +7,12 @@ Covers Steps 0.1-0.5 of the research plan, following the paper's protocol:
   pairs instead (Sec. 2).
 - Mean activations are pooled over a batch of prompts, one per starting node,
   so every concept is observed at least once (App. A, the N_w requirement).
-- Mean activations use the most recent N_w = 50 tokens (Sec. 3.1).
+- Mean activations use the most recent N_w = 50 tokens, or all of them when the
+  context is shorter than that (Sec. 3.1).
 - Dirichlet energy follows Eq. 3; rule-following accuracy and the 1-/2-shot
-  memorization baselines follow Sec. 4.1 and Eqs. 4-5.
+  memorization baselines follow Sec. 4.1 and Eqs. 4-5. Accuracy is the summed
+  neighbor probability at one position, averaged across the batch -- Sec. 4.1
+  defines no averaging over time.
 
 Steps 0.6 and 0.7 build on this one: experiments/semantic_priors.py reuses the
 protocol with weekday labels, and experiments/scaling.py drives this script
@@ -68,12 +71,40 @@ def parse_args():
         "--window-mode",
         choices=["fixed", "cumulative"],
         default="fixed",
-        help="'fixed' uses the last N_w tokens (Sec. 3.1). 'cumulative' uses the "
-             "whole prefix, which is how App. A can be read (N_w = N_c).",
+        help="'fixed' uses the last N_w tokens, which is what Sec. 3.1 states "
+             "('a window of N_w (=50) preceding tokens, or all tokens if the "
+             "context length is smaller than N_w'). 'cumulative' uses the whole "
+             "prefix, which is how App. A's contradictory N_w = N_c sentence "
+             "reads. Sec. 3.1 is the explicit one, so 'fixed' is the default.",
+    )
+    p.add_argument(
+        "--accuracy-window",
+        type=int,
+        default=1,
+        help="Timesteps to average accuracy over. The paper defines rule-"
+             "following accuracy at a single position -- the summed probability "
+             "over valid neighbors -- and gets its smoothing from averaging "
+             "across the batch of prompts, so 1 is the faithful setting. Larger "
+             "values trade fidelity for a less noisy curve.",
     )
     p.add_argument("--layers", type=int, nargs="+", default=[8, 16, 20, 26, 31])
     p.add_argument("--target-layer", type=int, default=26)
-    p.add_argument("--stride", type=int, default=100)
+    p.add_argument("--stride", type=int, default=100, help="Used by linear spacing.")
+    p.add_argument(
+        "--context-spacing",
+        choices=["log", "linear"],
+        default="log",
+        help="How to choose the context lengths to evaluate at. Every curve in "
+             "the paper is plotted against a log context axis, and the "
+             "transition sits early for small graphs, so log spacing puts the "
+             "samples where the curve actually bends. Evaluating more context "
+             "lengths costs no extra GPU time -- it is one forward pass per "
+             "prompt either way.",
+    )
+    p.add_argument("--context-points", type=int, default=60,
+                   help="Number of context lengths under log spacing.")
+    p.add_argument("--min-context", type=int, default=10,
+                   help="Shortest context to evaluate under log spacing.")
     p.add_argument(
         "--prompts",
         type=int,
@@ -99,6 +130,17 @@ def build_graph(args):
         make_hexagonal_graph(args.hex_rows, args.hex_cols),
         f"{args.hex_rows}x{args.hex_cols} hex lattice",
     )
+
+
+def context_lengths_for(args) -> np.ndarray:
+    """Context lengths to evaluate the curves at."""
+    if args.context_spacing == "linear":
+        return np.arange(args.stride, args.num_steps + 1, args.stride)
+
+    lengths = np.geomspace(
+        max(1, args.min_context), args.num_steps, args.context_points
+    )
+    return np.unique(lengths.astype(int))
 
 
 def generate_sequence(graph, args, start_node):
@@ -181,7 +223,7 @@ def main():
 
         num_prompts = args.prompts or num_nodes
         window = None if args.window_mode == "cumulative" else args.window_size
-        context_lengths = np.arange(args.window_size, args.num_steps + 1, args.stride)
+        context_lengths = context_lengths_for(args)
 
         hidden_dim = None
         sums = None
@@ -192,7 +234,10 @@ def main():
         print(f"[3/7] {num_prompts} prompts of {args.num_steps} steps, one per "
               f"starting node (pooled so every concept is observed)")
         print(f"[4/7] Extracting layers {layers}, window={args.window_mode}"
-              f"({args.window_size})...")
+              f"({args.window_size}); {len(context_lengths)} context lengths "
+              f"{context_lengths[0]}..{context_lengths[-1]} "
+              f"({args.context_spacing}-spaced), accuracy averaged over "
+              f"{args.accuracy_window} step(s) x {num_prompts} prompts...")
 
         for p_idx in range(num_prompts):
             start_node = p_idx % num_nodes
@@ -237,7 +282,7 @@ def main():
                         acts[layer], token_id_seq, node_token_ids, int(end),
                         window, sums[layer][ci], counts[ci],
                     )
-                value = windowed_mean(per_step_acc, int(end), args.window_size)
+                value = windowed_mean(per_step_acc, int(end), args.accuracy_window)
                 if not np.isnan(value):
                     acc_sums[ci] += value
                     acc_counts[ci] += 1
@@ -263,6 +308,7 @@ def main():
                 ring_nodes=args.ring_nodes, hex_rows=args.hex_rows,
                 hex_cols=args.hex_cols, window_size=args.window_size,
                 window_mode=args.window_mode, num_steps=args.num_steps,
+                accuracy_window=args.accuracy_window,
                 seed=args.seed,
                 **{f"sums_layer_{l}": v.astype(np.float32) for l, v in sums.items()},
             )
@@ -321,7 +367,8 @@ def main():
     ax_e.legend()
     ax_e.grid(alpha=0.3)
 
-    ax_a.plot(context_lengths, accuracies, color="k", label="Llama (observed)")
+    ax_a.plot(context_lengths, accuracies, color="k",
+              label=f"{args.model.split('/')[-1]} (observed)")
     mem1 = memorization_accuracy(context_lengths, num_nodes, shots=1)
     mem2 = memorization_accuracy(context_lengths, num_nodes, shots=2)
     ax_a.plot(context_lengths, mem1, ls=":", color="tab:blue", label="1-shot memorization")

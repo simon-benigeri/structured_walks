@@ -12,8 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from analysis import cycle_overlap
+from analysis import cycle_overlap, windowed_mean
 from analysis.circular import chance_level
+from experiments.reproduce import context_lengths_for, parse_args
 from experiments.scaling import fit_power_law
 from experiments.semantic_priors import arrange_weekdays
 from graphs import make_grid_graph, make_hexagonal_graph, make_ring_graph
@@ -88,6 +89,58 @@ def test_power_law_fit_reports_poor_quality_for_noise():
     sizes = np.array(SCALING_SIZES)
     points = np.array([500.0, 120.0, 900.0, 300.0])
     assert fit_power_law(sizes, points)["r2"] < 0.5
+
+
+def _default_args(**overrides):
+    saved = sys.argv
+    try:
+        sys.argv = ["reproduce.py"]
+        args = parse_args()
+    finally:
+        sys.argv = saved
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def test_accuracy_is_not_averaged_over_time_by_default():
+    """Sec. 4.1 defines accuracy at a single position; the batch does the
+    smoothing. A time window here would blur the transition and impose a floor
+    on the shortest measurable context."""
+    assert _default_args().accuracy_window == 1
+
+
+def test_accuracy_window_of_one_reads_the_last_position():
+    values = np.array([0.1, 0.2, 0.3, 0.4])
+    assert windowed_mean(values, 3, 1) == 0.3
+    assert windowed_mean(values, 4, 1) == 0.4
+
+
+def test_mean_activation_window_follows_section_3_1():
+    """N_w = 50, and shorter contexts fall back to every token."""
+    args = _default_args()
+    assert args.window_size == 50
+    assert args.window_mode == "fixed"
+
+
+def test_log_spacing_resolves_short_contexts():
+    """Linear strides put almost no points where small graphs transition."""
+    args = _default_args(num_steps=5000)
+    log_lengths = context_lengths_for(args)
+    linear_lengths = context_lengths_for(_default_args(
+        num_steps=5000, context_spacing="linear", stride=100))
+
+    assert (log_lengths <= 500).sum() > 3 * (linear_lengths <= 500).sum()
+    assert log_lengths[0] <= 10
+    assert log_lengths[-1] == 5000
+    assert np.all(np.diff(log_lengths) > 0), "must be sorted and deduplicated"
+
+
+def test_linear_spacing_still_available():
+    lengths = context_lengths_for(_default_args(
+        num_steps=1000, context_spacing="linear", stride=100))
+    assert lengths[0] == 100 and lengths[-1] == 1000
+    assert len(lengths) == 10
 
 
 def test_chance_level_falls_with_graph_size():
