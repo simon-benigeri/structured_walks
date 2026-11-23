@@ -126,8 +126,11 @@ run_config() {
             "$PY" experiments/reproduce.py "${common[@]}" \
                 --graph hex --hex-rows 3 --hex-cols 3 \
                 --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
-        weekday) # Step 0.6, Fig. 3
-            "$PY" experiments/semantic_priors.py "${common[@]}" \
+        weekday) # Step 0.6, Fig. 3. That figure reads layer 21, not 26.
+            "$PY" experiments/semantic_priors.py \
+                --model "$MODEL" --num-steps "$STEPS" \
+                --layers $LAYERS "${WEEKDAY_TARGET_LAYER:-21}" \
+                --target-layer "${WEEKDAY_TARGET_LAYER:-21}" \
                 --outdir "outputs/$name" --cache "outputs/$name/pooled.npz" ;;
         scaling) # Step 0.7, Fig. 8. Runs four grids itself, so it is the slowest.
             "$PY" experiments/scaling.py "${common[@]}" \

@@ -49,8 +49,12 @@ def parse_args():
     p.add_argument("--model", default="meta-llama/Llama-3.1-8B")
     p.add_argument("--num-steps", type=int, default=5000)
     p.add_argument("--window-size", type=int, default=50, help="N_w from Sec. 3.1.")
-    p.add_argument("--layers", type=int, nargs="+", default=[8, 16, 20, 26, 31])
-    p.add_argument("--target-layer", type=int, default=26)
+    p.add_argument("--layers", type=int, nargs="+", default=[8, 16, 20, 21, 26, 31])
+    # Fig. 3 reads this result off layer 21, not the layer 26 used elsewhere:
+    # "The representations are from the residual stream activation following
+    # layer 21." Which layer splits prior from in-context structure is itself
+    # layer-dependent, so this is not interchangeable with 26.
+    p.add_argument("--target-layer", type=int, default=21)
     p.add_argument("--stride", type=int, default=100, help="Used by linear spacing.")
     p.add_argument("--context-spacing", choices=["log", "linear"], default="log")
     p.add_argument("--context-points", type=int, default=60)
